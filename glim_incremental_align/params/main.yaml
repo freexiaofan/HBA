@@ -36,9 +36,8 @@
 #
 # 每行的 # 是一行摘要, 和 --help 是同一句话; 参数上方的多行块是实测记录。
 # =============================================================================
-root: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/"  # 数据根目录
-out: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/result/"  # 输出目录
-pose_store: "/media/tyjt/Elements/WG_wuling/test_grid_data_more/result_pose/"  # 位姿存档目录 (默认 <out>/poses)。**有存档 = 已优化, 本次跳过**
+work_sessions_dir: "/media/tyjt/Elements/WG_wuling/lt618/"  # 数据根目录
+output_dir: "/media/tyjt/Elements/WG_wuling/lt618/result/"  # 输出目录
 
 # clips | keyframe
 data_mode: "clips"              # clips | keyframe (默认 clips)
@@ -71,7 +70,11 @@ write_back_dir: "localized"  # 写回的目录名 (默认 opt_egomotions), 与 e
 incr: true                      # 开启增量模式 (取代 --joint 的两 session 逻辑)
 # 位姿+约束存档目录。**有存档 = 已优化, 本次跳过**。
 # 按 pcd 路径匹配并要求 100% 覆盖, 帧集一变就当作待优化而不是静默错位。
-redo: ""                        # 强制重做这些 session (即使有存档)
+redo: ""                        # 强制重做这些 session (即使有存档): intra+loop+cross 全部重做
+# 1 = 重建全部已优化 session 的跨 session 约束(位姿+同session内部约束原样复用, 不重新
+# 配准)。用于只改了 --cross_* 系列门槛之后, 想让新门槛生效又不想把耗时的帧间 BA/
+# 回环重跑一遍。
+redo_cross: 1                   # 1 = 重建全部已优化 session 的跨 session 约束 (不动位姿/同session约束)
 # 并入顺序。第一个是基准(只做自身 BA, 外参在它身上估一次然后固定)。
 # 留空 = 按目录序。
 sess_order: ""  # session 顺序 (逗号分隔的目录名); 默认按目录序
@@ -107,15 +110,25 @@ cross_per_sess: 0               # 1 = 每个被并入帧对**每个**之前的 s
 cross_ba: 1                     # 目标端 submap 先做一次**联合局部 BA** 再拼 (默认 0)。
 cross_ba_edges: 1               # 目标端 BA 产出的**跨session** ref<->ref 相对位姿也发成约束 (默认 1)。
 cross_ba_max: 40                # 目标端做 BA 的帧数上限 (默认 80)。150 帧同时带协方差+体素图约 1.2GB。
+
+# localBA 的帧间约束靠"距离+overlap_auto"(都在当前未修正的相对位姿下算), 两个 session
+# 差 0.6~1.2m 时 overlap_auto 会塌到接近 0, localBA 因此建不出任何跨 session 帧间约束、
+# 碰不到真正的跨 session 偏差(不报错不警告)。1 = 先用 submap 对 submap 的粗配准给
+# localBA 一个更好的初值。只影响 localBA 局部草稿初值, 不改任何最终图里的位姿。
+# !! [实测, 已证伪"护栏够用"] 单点验证过机制思路可行, 但接上生产代码在真实区域扫描
+# 里跑一遍后发现: 同一对 session、相邻区域找出来的"修正量"互相对不上(1.6m~6.9m,
+# 独立验证过的真值是 ~1.4~1.5m)——护栏在大范围扫描下不够可靠, 会放过 VGICP 伪影解。
+# 默认关闭, 目前不建议使用, 见 OVERNIGHT_SUBMAP_CONSISTENCY.md。
+cross_ba_coarse: 0               # 1 = localBA 之前先用 submap 对 submap 的粗配准给一个更好的初值 (目前不建议开启, 默认 0)
 cross_src_win: 3                # 源端也取当前帧 +-n 帧拼 submap (先局部 BA), 做 submap2submap (默认 0=单帧)。
 
 # 单帧体素(m)。[实测] 0.10 -> 0.05 让墙面厚度从 0.117 降到 0.071 (-40%)。
 # 那 0.117 里很大一部分是**体素量化**: 真实几厘米厚的墙被 0.1 网格切成
 # 沿法向 2~3 层格心, 量出来的"厚度"就是体素尺度本身。
-frame_voxel: 0.05              # 单帧体素 (默认 0.25)
+frame_voxel: 0.1              # 单帧体素 (默认 0.25)
 
 # 拼 submap / 导出成图的体素(m) = target 点间距。与 frame_voxel 同量级
-submap_voxel: 0.1              # submap 体素 = target 点间距 (默认 0.15)
+submap_voxel: 0.15              # submap 体素 = target 点间距 (默认 0.15)
 
 # 距离下限(m), 去车身
 min_range: 5                    # 单帧点的最小距离 (m), <=0 = 关闭
@@ -167,7 +180,7 @@ z_above: 1.0                    # 量 nn 时只统计**高于地面** z_above �
 # 重叠——比去地面前后比平移差更稳(平移差在几条坏案例里跟好案例一样低, 分不出来)。
 # <=0 = 关闭。落盘(dump_loop/dump_cross)里都会多一张"去地面重配准"的俯视图,
 # 门关着也画, 方便先看图再定这个数。
-ground_drot_max: 0.1
+ground_drot_max: 0.08
 
 # 优化后姿态自检(度): 车在路上的车体姿态应当接近水平, roll/pitch 明显偏离大概率是
 # 这一帧配错了(被某条错误约束拽歪, 或者附近压根没有约束、只靠 INS 先验飘着)。
@@ -378,8 +391,8 @@ dump_loop: 5000                  # **debug**: 落盘前 n 个回环候选 (0=关
 dump_pcd: 0                     # dump 时是否**也存 pcd** (默认 0 = 只存 png)。
 
 # ---- 约束去重 / 均匀化 (四维 NMS) ----
-nms_loop: 0                     # 回环用**四维 NMS** 去重 (m); <=0 = 用旧的中点聚类 loop_cluster_*
-nms_cross: 0                    # 跨session 用四维 NMS 去重 (m); <=0 = 不去重 (旧行为, 每帧一条)
+nms_loop: 10                     # 回环用**四维 NMS** 去重 (m); <=0 = 用旧的中点聚类 loop_cluster_*
+nms_cross: 10                    # 跨session 用四维 NMS 去重 (m); <=0 = 不去重 (旧行为, 每帧一条)
 nms_win_deltas: ""              # 同session 窗口内**只建**这些帧号差的约束; 空 = 全建(默认)。
 loop_cluster_dist: 5            # 回环候选按位置聚类的半径 (m)
 loop_cluster_max: 1             # 每个聚类里最多留几条回环候选
@@ -447,4 +460,19 @@ cross_sigma_xy: 0.09            # 跨 session 约束的 sigma (默认 0.09)
 
 # 跨 session 约束的旋转 sigma(rad)
 cross_sigma_r: 0.005            # 跨 session 约束的旋转 sigma (默认 0.005)
+
+# ---- submap 自身一致性门 (buildCross 的 target 用) ----
+# 参照帧按下标奇偶拆两半, 配准这两半(自己跟自己比), 需要多大的刚体修正才能对上——
+# 修正量大 = 这个 submap 本身不干净, 拿它当 target 配出来的约束肯定也是错的, 整个
+# 区域直接跳过。内部有护栏: as-is nn(tgt_ghost)已经低于 cross_bias_nn_floor(默认
+# 0.15m)时直接放行, 不采信任何修正量; 就算 as-is nn 大, 也要验证修正后 nn 是否真的
+# 显著变好, 不然这个数字本身就不可信(避免 VGICP 沿道路方向配准退化产生的伪影修正量)。
+# 两项满足其一即拒绝该区域; <=0 = 不检查那一项。
+cross_bias_t_max: 0.10          # submap 自身一致性门: 奇偶两半最佳拟合修正量的平移上限 (m); <=0 = 关闭(默认)
+cross_bias_r_max: 0.10          # submap 自身一致性门: 奇偶两半最佳拟合修正量的旋转上限 (度); <=0 = 关闭(默认)
+
+# target 自身重影(tgt_ghost)的 p90 上限。中位数正常但 p90 超限 = 局部真有重影(比如
+# 一面墙双线), 全局中位数看不出来、上面那道"奇偶两半修正量"的门也测不出来(局部双影
+# 不是一个全局刚体偏差能解释的)。没有在真实数据上标定过阈值, 默认关闭。
+cross_ghost_p90_max: 0.0        # target 自身重影 p90 上限 (m); <=0 = 关闭(默认)
 

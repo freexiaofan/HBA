@@ -493,6 +493,12 @@ inline SubmapCeresStats optimizeSubmapCeresExt(
   FLAGS_stderrthreshold = google::ERROR;
   ceres::Solver::Options so;
   so.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+  // SPARSE_NORMAL_CHOLESKY 默认走 SuiteSparse(CHOLMOD), 而 CHOLMOD 自己在 analyze 阶段
+  // 会直接 printf 一堆"CHOLMOD version ...: Symbolic Analysis"这类诊断信息——这是
+  // CHOLMOD 库内部的输出, 不走 glog, 上面的 FLAGS_minloglevel/logging_type 都管不到它。
+  // 换成 Eigen 的稀疏 Cholesky 就不会调用 CHOLMOD, 这些刷屏的行也就没有了; 这个项目的
+  // 图规模不大(数千个顶点/边量级), Eigen 稀疏解一样够用, 没有必要为了避开这行日志换求解器再换回来。
+  so.sparse_linear_algebra_library_type = ceres::EIGEN_SPARSE;
   so.max_num_iterations = o.iters;
   so.num_threads = 1;
   so.logging_type = ceres::SILENT;
@@ -687,6 +693,12 @@ inline SubmapCeresStats optimizeSubmapCeres(
   FLAGS_stderrthreshold = google::ERROR;
   ceres::Solver::Options so;
   so.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+  // SPARSE_NORMAL_CHOLESKY 默认走 SuiteSparse(CHOLMOD), 而 CHOLMOD 自己在 analyze 阶段
+  // 会直接 printf 一堆"CHOLMOD version ...: Symbolic Analysis"这类诊断信息——这是
+  // CHOLMOD 库内部的输出, 不走 glog, 上面的 FLAGS_minloglevel/logging_type 都管不到它。
+  // 换成 Eigen 的稀疏 Cholesky 就不会调用 CHOLMOD, 这些刷屏的行也就没有了; 这个项目的
+  // 图规模不大(数千个顶点/边量级), Eigen 稀疏解一样够用, 没有必要为了避开这行日志换求解器再换回来。
+  so.sparse_linear_algebra_library_type = ceres::EIGEN_SPARSE;
   so.max_num_iterations = o.iters;
   so.num_threads = 1;  // 外层已按 submap 并行
   so.logging_type = ceres::SILENT;

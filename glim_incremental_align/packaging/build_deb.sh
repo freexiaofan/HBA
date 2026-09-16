@@ -158,7 +158,7 @@ set -e
 echo ""
 echo "  local_align 已安装。参数模板: $PREFIX/share/params/main.yaml"
 echo ""
-echo "  先复制一份出来改数据路径 (root / out / pose_store 三项是绝对路径):"
+echo "  先复制一份出来改数据路径 (work_sessions_dir / output_dir 两项是绝对路径; 存档固定在 <output_dir>/session_poses/):"
 echo "      cp $PREFIX/share/params/main.yaml ~/my.yaml"
 echo "      local_align --params ~/my.yaml --list_done   # 先确认能扫到 session"
 echo "      local_align --params ~/my.yaml               # 正式跑"

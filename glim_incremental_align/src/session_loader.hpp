@@ -98,7 +98,7 @@ struct LoadOptions {
 // 不同 session, 每个 session 也许只贡献一两个 clip —— 这时不该把整个 session 目录
 // 都加载进来(绝大多数帧根本不在这个格子附近, 白白吃内存和 IO)。
 //
-// 这**不是**一个独立的 data_mode: --root 仍然是真正的数据根目录(discoverSessions 照常
+// 这**不是**一个独立的 data_mode: --work_sessions_dir 仍然是真正的数据根目录(discoverSessions 照常
 // 扫出全部 session), --grid_file 只是在此基础上做一层筛选。这样才能正确处理两种都
 // 实际出现过的目录布局 —— 有的数据集一个日期一个 session 目录, 有的把很多天的 clip
 // 混堆在同一个 "clips/" 池子里当成一个 session —— 不用去猜 clip 路径的层级结构,
@@ -171,7 +171,7 @@ inline std::vector<fs::path> filterSessionsByGrid(
   }
   if (n_missing) std::cerr << "[grid] 共 " << n_missing << " 个 clip 目录不存在, 已跳过\n";
   if (n_nosession)
-    std::cerr << "[grid] 共 " << n_nosession << " 个 clip 不属于任何已发现的 session (--root 给对了吗?), 已跳过\n";
+    std::cerr << "[grid] 共 " << n_nosession << " 个 clip 不属于任何已发现的 session (--work_sessions_dir 给对了吗?), 已跳过\n";
   std::vector<fs::path> out;
   for (const auto& s : all_sessions) {
     if (grid_map.count(s.string())) out.push_back(s);

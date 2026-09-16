@@ -112,7 +112,8 @@ libtbb.so.2   (libtbb2  2020.3)                           -> GTSAM 实际需要�
 3. 帧集**按 pcd 路径 100% 命中**
 
 第 3 条是硬要求，帧集一变就当作待优化而不是静默错位。注意 `--load_roi` 会改变帧集，所以带
-ROI 和不带 ROI 的两次运行不能共用一个 `--pose_store`。
+ROI 和不带 ROI 的两次运行不能共用一个 `--output_dir`（存档目录固定是 `<output_dir>/session_poses/`，
+跟着 `--output_dir` 走，不再单独可配）。
 
 ---
 
@@ -158,8 +159,8 @@ ROI 和不带 ROI 的两次运行不能共用一个 `--pose_store`。
 每次运行把**生效后**的参数写到两处：
 
 ```
-<out>/params_effective.yaml        这一次实际用的
-<pose_store>/params.yaml           造出这批存档所用的
+<output_dir>/params_effective.yaml        这一次实际用的
+<output_dir>/session_poses/params.yaml    造出这批存档所用的
 ```
 
 写"生效后"而不是复制输入文件——有命令行覆盖时，只有生效值才是真正用的。
@@ -184,14 +185,19 @@ ROI 和不带 ROI 的两次运行不能共用一个 `--pose_store`。
 **下次增量直接用存档里那份**，前后参数必然一致：
 
 ```bash
-./build/local_align --params <上次的 pose_store>/params.yaml --out <新目录>
+./build/local_align --params <上次的 output_dir>/session_poses/params.yaml --output_dir <新目录>
 ```
 
-### 已废弃的参数
+### 已废弃 / 已改名的参数
 
 删掉的参数进 `kRetired` 名单：`render_sample_pairs`、`config`、`loop_dyaw`、`loop_bidir`、
-`loop_any_dyaw`。旧存档的 `params.yaml` 带着这些键时会打印"已废弃，忽略"而不是硬失败——
-未知键是硬失败（防拼错），但已废弃的键不该让旧存档整个读不进来。
+`loop_any_dyaw`、`pose_store`。旧存档的 `params.yaml` 带着这些键时会打印"已废弃，忽略"而不是
+硬失败——未知键是硬失败（防拼错），但已废弃的键不该让旧存档整个读不进来。
+
+只是改了名字、功能没变的参数进 `kRenamed` 名单：`root` → `work_sessions_dir`、
+`out` → `output_dir`。旧存档的 `params.yaml` 带着老名字时会打印"已改名为 xxx，按新名字处理"
+并按新字段生效——跟 `kRetired` 不同，这类键**仍然参与**"和存档相比哪些参数变了"的比对，
+不会因为改名就丢掉那层保护。
 
 ---
 
@@ -438,7 +444,8 @@ northing) 数学上定不了带号，猜错会把图放到地球上错误的位�
 ## 8. 目录约定
 
 ```
-<pose_store>/                 增量的全部状态, 几十 MB, **绝不清**
+<output_dir>/session_poses/   增量的全部状态, 几十 MB, **绝不清**——固定在 output_dir 下面,
+                               不再单独可配 (不接受 --pose_store)
   <session>.csv               每帧一行 T_w_v (头部记 base_utm / 外参 / 帧数)
   <session>_edges.csv         约束存档 (kind, from_pcd, to_pcd, 相对位姿, nn, sigma_scale)
   params.yaml                 造出这批存档所用的参数
@@ -447,7 +454,7 @@ northing) 数学上定不了带号，猜错会把图放到地球上错误的位�
   constraint_graph.png        约束图 ("约束在哪儿"比"有多少条"重要)
   cross_edges.csv             每条跨 session 边一行, 按 nn 排序找配坏的地方
 
-<out>/                        点云/las/dump, 几十 GB, 随便清
+<output_dir>/                 点云/las/dump, 几十 GB, 除了 session_poses/ 都随便清
   <session>_after.pcd         体素 0.05, 量重影/厚度的基准
   <session>_after.las         **原始点**, 绝对 UTM, 强度+RGB 在一个文件里
   <session>_after_rgb.pcd     **原始点**, 带颜色
@@ -455,8 +462,9 @@ northing) 数学上定不了带号，猜错会把图放到地球上错误的位�
   params_effective.yaml       这一次实际用的参数
 ```
 
-`run_incr.sh` 负责"清 out、保留存档、从 yaml 读路径"这套流程，并且拦住
-`pose_store` 在 `out` 里面的情况（那样清 out 会连存档一起删）。
+**存档现在固定挂在 `<output_dir>/session_poses/` 下面**——想清空点云/las 之类的大产物、又想
+保留存档复用，清理脚本必须显式排除这个子目录(而不是像以前那样把存档整个放到 `--output_dir`
+之外的独立目录)；想从零重做就直接换一个新的 `--output_dir`，不要在原地删了重建。
 
 ---
 
