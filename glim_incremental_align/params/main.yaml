@@ -36,8 +36,8 @@
 #
 # 每行的 # 是一行摘要, 和 --help 是同一句话; 参数上方的多行块是实测记录。
 # =============================================================================
-work_sessions_dir: "/media/tyjt/Elements/WG_wuling/lt618/"  # 数据根目录
-output_dir: "/media/tyjt/Elements/WG_wuling/lt618/result/"  # 输出目录
+work_sessions_dir: "/media/tyjt/Elements/WG_wuling/test_grid_data_2/"  # 数据根目录
+output_dir: "/media/tyjt/Elements/WG_wuling/test_grid_data_2/result/"  # 输出目录
 
 # clips | keyframe
 data_mode: "clips"              # clips | keyframe (默认 clips)
@@ -109,7 +109,7 @@ cross_per_sess: 0               # 1 = 每个被并入帧对**每个**之前的 s
 # ---- 跨 session 配准: 两端都先做局部 BA, 再 submap2submap ----
 cross_ba: 1                     # 目标端 submap 先做一次**联合局部 BA** 再拼 (默认 0)。
 cross_ba_edges: 1               # 目标端 BA 产出的**跨session** ref<->ref 相对位姿也发成约束 (默认 1)。
-cross_ba_max: 40                # 目标端做 BA 的帧数上限 (默认 80)。150 帧同时带协方差+体素图约 1.2GB。
+cross_ba_max: 20                # 目标端做 BA 的帧数上限 (默认 80)。150 帧同时带协方差+体素图约 1.2GB。
 
 # localBA 的帧间约束靠"距离+overlap_auto"(都在当前未修正的相对位姿下算), 两个 session
 # 差 0.6~1.2m 时 overlap_auto 会塌到接近 0, localBA 因此建不出任何跨 session 帧间约束、

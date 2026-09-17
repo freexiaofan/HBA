@@ -114,7 +114,7 @@ struct Opt {
   // **注意**: 同一次配准派生的 N 条边不是独立测量 (共享同一个配准噪声), 所以它们的
   // sigma 会自动乘 sqrt(N) —— 否则等于把那次测量的权重算了 N 遍, 正是我们在去重时
   // 要消除的那种虚高。
-  int cross_per_sess = 0;
+  int cross_per_sess = 1;
   // 1 = 不把邻域内前面所有 session 的参照帧合并成一个 target, 改成按 session 分组,
   // 每个 session 各自的参照帧单独拼一个 submap, 候选帧对每一个都单独配一次(各自
   // 走一遍完整的 cross_ba/自身重影筛查/主配准/各道门), 各自独立出边(sigma 不再
@@ -124,7 +124,7 @@ struct Opt {
   // 这个糊的程度; 不合并的话, 每个 session 自己的 submap(如果内部一致, 见
   // --submap_ghost_gate)更清晰, 配准更可信, 而且天然获得多个独立测量互相印证的
   // 副产品(不需要像 checkCrossSessionCycle 那样另外验证)。
-  int cross_per_session_submap = 0;
+  int cross_per_session_submap = 1;
   // per-session 模式下, 每多一个已优化 session, 这个区域要多拆一组分别配准, 成本随
   // "已经优化过多少个 session"线性(甚至更快)增长——但实际上只有这些 session 在这个
   // 区域**真的合不上**的时候, 拆开分别配才有意义; 如果它们本来就一致, 合并成一个
@@ -340,6 +340,12 @@ struct Opt {
   // 它们本来就会完整跑一遍, 说了也是白说。
   int redo_cross = 0;
   std::string sess_order;          // session 顺序 (逗号分隔的名字); 空 = 目录序
+  // 默认(0): 处理顺序第一个(=BA锚点/基准)会被自动改成轨迹最长的那个, 不管 sess_order
+  // 里写的是谁排第一——这是常规增量建图想要的("覆盖路网大的当参照更容易建上约束")。
+  // 但专门想指定谁当锚点做对比实验时(比如"验证日期最新的session当锚点效果好不好"),
+  // 这个自动改选反而会把实验对象换掉、验证不到想验证的东西。打开这个开关(1) 就
+  // 老老实实用 sess_order 里排第一的那个当锚点, 不再按轨迹长度自动改选。
+  int anchor_by_order = 0;
   bool list_done = false;          // 只列清单就退出
   std::string load_g2o;            // 载入已有位姿图: 老 session 的约束直接复用, 不重新构造
   // 1 = 老 session 的位姿在最终联合优化里**钉死** (旧行为)。默认 0 = 一起优化。
@@ -462,6 +468,19 @@ struct Opt {
   double region_radius = 50.0;     // 每个重叠区域的半径 (A 取这个范围内的帧拼 submap)
   // 每个区域拼 submap 最多用多少参照帧 (0=不限)。多 session 之后必须封顶, 见 buildCross。
   int region_max_frames = 150;
+  // 每个区域最多同时用几个"已优化" session 的帧做参照 (按该区域内帧数排名取前 N 个
+  // session, 其余已优化 session 在这个区域直接不参与)。0=不限(旧行为, 每个区域把邻域内
+  // 所有已优化 session 的帧一起拉来用)。
+  //
+  // 为什么要封: 已优化 session 之间早就互相验证过一致了(这正是"已优化"的定义), 新 session
+  // 来了没必要每次都把全部已优化 session 重新拉一遍去核对它们还一不一致——尤其
+  // --cross_per_session_submap 开着时, 一旦判定这些 session 在这片区域有分歧就会按
+  // session 拆开、每个 session 各自跑一遍"合并target+联合BA+自身重影自检+回环一致性
+  // 检查"这一整套固定成本, 相当于把单个区域的成本乘上"这片区域凑巧有几个已优化 session"
+  // ——这才是"session 越多跨session匹配越慢"的真正主因(实测 region_max_frames 只封了
+  // 单区域**帧总数**, 封不住**session 数**: 274 帧限流到 150, 但可能还是分摊在十来个
+  // session 上, 按 session 拆开时就是十来遍固定成本)。
+  int cross_backbone_sessions = 3;
   double cross_sigma_xy = 0.09;    // 跨 session 约束的 sigma。**实测值**: 六处锚点的
                                    // 配准后 nn 是 0.070~0.103, 所以 0.09 是它的真实精度。
   double cross_sigma_r = 0.005;
@@ -710,6 +729,8 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('I', "redo_cross", &o.redo_cross,
     "1 = 重建全部已优化 session 的跨 session 约束(位姿+同session内部约束原样复用, 不重新配准)"),
   F('S', "sess_order", &o.sess_order, "session 顺序 (逗号分隔的目录名); 默认按目录序"),
+  F('I', "anchor_by_order", &o.anchor_by_order,
+    "1 = BA锚点(处理顺序第一个)老实用 sess_order 排第一的, 不按轨迹长度自动改选 (默认0)"),
   F('B', "list_done", &o.list_done, "只打印'哪些已优化/哪些待优化'然后退出, 不干活"),
   F('S', "load_g2o", &o.load_g2o, "载入已有位姿图(需同名 _index.csv); 里面的 session 视为已优化"),
   F('I', "freeze_prev", &o.freeze_prev, "1 = 老 session 的位姿在联合优化里钉死 (默认 0 = 一起优化)"),
@@ -763,6 +784,8 @@ static std::vector<ParamField> paramFields(Opt& o) {
   F('D', "region_step", &o.region_step, "沿共位段每隔多少米开一个重叠区域 (默认 150)"),
   F('D', "region_radius", &o.region_radius, "每个重叠区域的半径 (默认 40)"),
   F('I', "region_max_frames", &o.region_max_frames, "每个区域拼 submap 最多用多少参照帧 (默认 150, 0=不限)"),
+  F('I', "cross_backbone_sessions", &o.cross_backbone_sessions,
+    "每个区域最多同时用几个已优化 session 做参照 (按帧数排名取前 N 个, 默认 2, 0=不限/旧行为)"),
     F('#', "跨 session 约束的权重 (--incr 的最终联合优化用)", nullptr),
   F('D', "cross_sigma_xy", &o.cross_sigma_xy, "跨 session 约束的 sigma (默认 0.09)"),
   F('D', "cross_sigma_r", &o.cross_sigma_r, "跨 session 约束的旋转 sigma (默认 0.005)"),
@@ -948,7 +971,7 @@ static bool diffParams(const fs::path& f, Opt& o) {
     "cross_session_cycle_t_max", "cross_session_cycle_r_max",
     "submap_ghost_gate", "ghost_cell_res", "ghost_dilate_m", "ghost_min_blob_m2",
     "ghost_max_conflict_m2",
-    "region_step", "region_radius", "region_max_frames",
+    "region_step", "region_radius", "region_max_frames", "cross_backbone_sessions",
     "drop_isolated", "drop_static", "drop_frames", "load_roi_x", "load_roi_y", "load_roi_size",
     "yaw_fix_deg", "opt_ext", "ba_visual", "ba_sigma_px",
   };
@@ -1307,6 +1330,10 @@ static void usage() {
  增量建图 (多 session 依次并入, 第一个为基准):
   --incr                开启增量模式 (取代 --joint 的两 session 逻辑)
   --sess_order <a,b,c>  session 顺序 (逗号分隔的目录名); 默认按目录序
+  --anchor_by_order <0|1>  1 = BA锚点(处理顺序第一个)老实用 sess_order 排第一的,
+                        不按轨迹长度自动改选 (默认0=自动挑轨迹最长的当锚点)。
+                        专门做对比实验(比如验证指定某个 session 当锚点效果如何)时打开,
+                        否则常规增量建图不建议动这个默认值。
   位姿存档目录固定是 <output_dir>/session_poses/ (不再单独可配, 也不接受 --pose_store)。
                         **有存档 = 已优化, 本次跳过**。存档是增量建图的全部状态(位姿 +
                         约束), 跟 --output_dir 下几十 GB 的点云/las/dump 放在一起——**清空
@@ -1481,6 +1508,13 @@ static void usage() {
                         20 个 session 之后七百多帧/350 万点)。按到中心的距离排序后**按
                         session 轮转取**: 近处优先, 且每个 session 都有代表 —— 只按距离取
                         会让最近的那个 session 独占名额, 而多 session 的价值就在互相印证。
+  --cross_backbone_sessions <n>  每个区域最多同时用几个已优化 session 做参照 (默认 2, 0=不限)
+                        region_max_frames 只封单区域**帧总数**, 封不住**session 数**——
+                        --cross_per_session_submap 判定分歧、按 session 拆开时, 一个区域
+                        凑巧有几个已优化 session 就要重复跑几遍"合并target+联合BA+自身
+                        重影自检+回环一致性检查"这一整套固定成本。这才是"session 越多
+                        跨session匹配越慢"的真正主因。按该区域内帧数排名只取前 N 个
+                        session, 其余已优化 session 在这个区域直接不参与。
   --cross_sigma_r <rad> 跨 session 约束的旋转 sigma (默认 0.005)
   --cross_sigma_xy <m>  跨 session 约束的 sigma (默认 0.09)
                         **实测值**: 六处锚点上 B 配准后的 nn 是 0.070~0.103。
@@ -1684,6 +1718,7 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--redo") ns(o.redo);
     else if (a == "--redo_cross") ni(o.redo_cross);
     else if (a == "--sess_order") ns(o.sess_order);
+    else if (a == "--anchor_by_order") ni(o.anchor_by_order);
     else if (a == "--list_done") o.list_done = true;
     else if (a == "--dump_cross") ni(o.dump_cross);
     else if (a == "--dump_cross_ok_only") ni(o.dump_cross_ok_only);
@@ -1737,6 +1772,7 @@ static bool parse(int argc, char** argv, Opt& o) {
     else if (a == "--region_step") nd(o.region_step);
     else if (a == "--region_radius") nd(o.region_radius);
     else if (a == "--region_max_frames") ni(o.region_max_frames);
+    else if (a == "--cross_backbone_sessions") ni(o.cross_backbone_sessions);
     else if (a == "--cross_sigma_xy") nd(o.cross_sigma_xy);
     else if (a == "--cross_sigma_r") nd(o.cross_sigma_r);
     else if (a == "--cross_nn_p90_max") nd(o.cross_nn_p90_max);
@@ -3481,6 +3517,23 @@ static GhostGridResult detectSubmapGhost(const std::vector<Eigen::Vector4d>& h0_
   std::vector<uint8_t> conflict(N);
   for (std::size_t i = 0; i < N; i++)
     conflict[i] = (red_only_dil[i] && green_only[i]) || (green_only_dil[i] && red_only[i]);
+  // [临时调试] 逐阶段计数, 排查"明明肉眼有重影却测出 0 冲突"——见对应 printf 调用处。
+  if (::getenv("GHOST_DEBUG")) {
+    std::size_t n_red = 0, n_green = 0, n_red_only = 0, n_green_only = 0, n_conflict_raw = 0;
+    for (std::size_t i = 0; i < N; i++) {
+      n_red += red[i] != 0;
+      n_green += green[i] != 0;
+      n_red_only += red_only[i] != 0;
+      n_green_only += green_only[i] != 0;
+      n_conflict_raw += conflict[i] != 0;
+    }
+    printf("      [GHOST_DEBUG] 网格 %dx%d(cell=%.3fm) tol_r=%d(格) dil_r=%d(格)\n", W, H, cell_res,
+           tol_r, dil_r);
+    printf("      [GHOST_DEBUG] red占用格=%zu green占用格=%zu | red_only=%zu green_only=%zu"
+           " | 膨胀前 conflict(逐格)=%zu (%.3fm²)\n",
+           n_red, n_green, n_red_only, n_green_only, n_conflict_raw,
+           n_conflict_raw * cell_res * cell_res);
+  }
 
   // [实测踩坑] h0/h1 在传进来之前已经按 submap_voxel(通常 0.15m)体素下采样过, 比这里
   // 的光栅格子(cell_res 通常 0.08m)还稀——同一片实际连续的冲突, 在 conflict 这个
@@ -3490,8 +3543,16 @@ static GhostGridResult detectSubmapGhost(const std::vector<Eigen::Vector4d>& h0_
   // 连续色块。这里只用一份**膨胀过的 conflict 副本**做连通性判断(决定哪些格子算
   // 同一个连通块), 面积仍然只累计**原始未膨胀**的 conflict 格子数——连通性借用膨胀,
   // 面积不因为膨胀而虚增。
+  // [临时调试] connect_r 允许用环境变量覆盖(格数), 用来现场试"到底要多大的连通半径
+  // 才能把实测的一堆小碎块并成能过 min_blob_m2 门槛的大块"——见 GHOST_DEBUG 那次
+  // 现场测出的数据: 370 个冲突格子, 按 point_spacing_m(=0.15m -> 2 格) 连通后碎成
+  // 104 个连通块, 最大的才 16 格(0.1m²), 离 120 格(0.77m²)的门槛差了一个数量级。
+  const char* connect_r_env = ::getenv("GHOST_CONNECT_R_CELLS");
   const int connect_r =
-    point_spacing_m > 0 ? std::max(1, static_cast<int>(std::ceil(point_spacing_m / cell_res))) : 0;
+    connect_r_env ? std::max(0, std::atoi(connect_r_env))
+                  : (point_spacing_m > 0
+                       ? std::max(1, static_cast<int>(std::ceil(point_spacing_m / cell_res)))
+                       : 0);
   const auto conflict_conn = connect_r > 0 ? dilate(conflict, connect_r) : conflict;
 
   // 连通域(在 conflict_conn 上做 4-邻接 flood fill), 过滤掉小于 min_blob_m2 的噪点簇
@@ -3502,6 +3563,7 @@ static GhostGridResult detectSubmapGhost(const std::vector<Eigen::Vector4d>& h0_
   std::vector<int> stack;
   double total_area = 0;
   int n_blobs = 0;
+  std::vector<std::size_t> all_blob_cnt_real;  // [临时调试] 每个连通块的真实格子数, 含被 min_cells 滤掉的
   for (std::size_t i = 0; i < N; i++) {
     if (!conflict_conn[i] || visited[i]) continue;
     stack.clear();
@@ -3527,10 +3589,19 @@ static GhostGridResult detectSubmapGhost(const std::vector<Eigen::Vector4d>& h0_
         }
       }
     }
+    if (::getenv("GHOST_DEBUG")) all_blob_cnt_real.push_back(cnt_real);
     if (cnt_real >= min_cells) {
       total_area += static_cast<double>(cnt_real) * cell_area;
       n_blobs++;
     }
+  }
+  if (::getenv("GHOST_DEBUG")) {
+    std::sort(all_blob_cnt_real.rbegin(), all_blob_cnt_real.rend());
+    printf("      [GHOST_DEBUG] min_cells(过滤线)=%zu(=%.2fm²) | 连通块总数=%zu | 前5大(格数/面积m²): ",
+           min_cells, min_blob_m2, all_blob_cnt_real.size());
+    for (std::size_t k = 0; k < std::min<std::size_t>(5, all_blob_cnt_real.size()); k++)
+      printf("%zu(%.3f) ", all_blob_cnt_real[k], all_blob_cnt_real[k] * cell_area);
+    printf("\n");
   }
   res.conflict_area_m2 = total_area;
   res.n_blobs = n_blobs;
@@ -4834,6 +4905,42 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
     }
     if (ra.size() < 8 || rb.empty()) continue;
 
+    // ---- 骨干 session 限定: 只留这个区域内帧数最多的前 N 个已优化 session ----
+    // 已优化 session 互相之间早就验证过一致了, 不需要每次新 session 来都把邻域内**所有**
+    // 已优化 session 的帧重新拉一遍——尤其 --cross_per_session_submap 判定分歧、按
+    // session 拆开处理时, 一个区域凑巧覆盖了几个已优化 session, 后面"合并target+联合
+    // BA+自身重影自检+回环一致性检查"这一整套固定成本就要重复跑几遍。把 session **数量**
+    // 封顶在这里做(而不是只封 region_max_frames 那个帧**总数**), 才是真正管用的地方。
+    if (o.cross_backbone_sessions > 0) {
+      std::map<int, std::vector<int>> by_sess_bb;
+      for (const int i : ra) by_sess_bb[ref[i].sess].push_back(i);
+      if (::getenv("GHOST_DEBUG") && by_sess_bb.size() <= static_cast<std::size_t>(o.cross_backbone_sessions)) {
+        printf("      [GHOST_DEBUG] 骨干session筛选: 候选%zu个session, 未超过上限%d, 全部保留: ",
+               by_sess_bb.size(), o.cross_backbone_sessions);
+        for (const auto& [sk, v] : by_sess_bb) printf("sess[%d](%zu帧) ", sk, v.size());
+        printf("\n");
+      }
+      if (by_sess_bb.size() > static_cast<std::size_t>(o.cross_backbone_sessions)) {
+        std::vector<std::pair<std::size_t, int>> rank;  // (帧数, sess)
+        for (const auto& [sk, v] : by_sess_bb) rank.push_back({v.size(), sk});
+        std::sort(rank.begin(), rank.end(), std::greater<>());
+        std::set<int> keep;
+        for (int u = 0; u < o.cross_backbone_sessions && u < static_cast<int>(rank.size()); u++)
+          keep.insert(rank[u].second);
+        std::vector<int> ra_bb;
+        for (const int i : ra)
+          if (keep.count(ref[i].sess)) ra_bb.push_back(i);
+        ra.swap(ra_bb);
+        if (::getenv("GHOST_DEBUG")) {
+          printf("      [GHOST_DEBUG] 骨干session筛选: 候选%zu个session -> 保留%d个: ",
+                 by_sess_bb.size(), o.cross_backbone_sessions);
+          for (const auto& [cnt, sk] : rank)
+            printf("sess[%d](%zu帧)%s ", sk, cnt, keep.count(sk) ? "[保留]" : "[丢弃]");
+          printf("\n");
+        }
+      }
+    }
+
     // ---- 限流: 每个区域拼 submap 的参照帧数封顶 ----
     // 配准**次数**只取决于新 session 的共位帧数(与已有 session 数无关), 但每次配准的
     // **target 大小**会随 session 数线性膨胀: 一个 40m 区域现在是 96~109 帧,
@@ -4932,8 +5039,6 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
       }
       for (const auto& q : pp->points) sm.push_back(Pa[u] * q);
     }
-    ra_pc.clear();
-    ra_pc.shrink_to_fit();
     if (sm.size() < 20000) return;
     // ref 全局下标 -> 在 ra/Pa 里的位置 (边要相对**BA 后**的位姿表达)
     std::map<int, std::size_t> ra_at;
@@ -5024,20 +5129,37 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
         savePts(cdir / nm, sm);
       }
       // 参照帧按下标奇偶拆两半, 互测 = target 自身重影; **同时**按 session 分组(用于
-      // 下面 checkCrossSessionCycle), 两件事共用同一次 loadFrame, 不重复读盘。
+      // 下面 checkCrossSessionCycle)。这些帧多数已经在上面 localBA/建 sm 时读过一次盘了
+      // (ra_pc), 这里直接复用那份点(局部坐标系点不受 BA 影响, 只是这里要用**原始**
+      // ref[...].T_w_l 而不是 BA 后的 Pa[u] 去世界系——量的是参照数据本身多不一致,
+      // 不是 BA 修完之后还剩多少), ra_pc 里没有的(比如 cross_ba 关着、根本没走 BA
+      // 这条路)才退回 loadFrame, 不再对每一帧重复读盘。
       std::vector<Eigen::Vector4d> h0, h1;
+      // BA 修正后(Pa)的同一份拆分, 跟 h0/h1(原始 ref[...].T_w_l)配对着算, 才能真正回答
+      // "这批参照帧的局部 BA 到底有没有把这里的重影修掉", 而不是永远只看修正前的样子。
+      std::vector<Eigen::Vector4d> h0_ba, h1_ba;
       std::map<int, std::vector<Eigen::Vector4d>> sess_pts;
       for (std::size_t u = 0; u < ra.size(); u++) {
+        const ialign::PcdCloud* pp2 = nullptr;
         ialign::PcdCloud pc2;
-        if (!loadFrame(ref[ra[u]].pcd_path, o, pc2)) continue;
+        if (u < ra_pc.size() && !ra_pc[u].points.empty()) {
+          pp2 = &ra_pc[u];
+        } else {
+          if (!loadFrame(ref[ra[u]].pcd_path, o, pc2)) continue;
+          pp2 = &pc2;
+        }
         auto& h = (u % 2) ? h1 : h0;
+        auto& h_ba = (u % 2) ? h1_ba : h0_ba;
         auto& hs = sess_pts[ref[ra[u]].sess];
-        for (const auto& p : pc2.points) {
+        for (const auto& p : pp2->points) {
           const Eigen::Vector4d pw = ref[ra[u]].T_w_l * p;
           h.push_back(pw);
           hs.push_back(pw);
+          if (ba_ok) h_ba.push_back(Pa[u] * p);
         }
       }
+      ra_pc.clear();
+      ra_pc.shrink_to_fit();
       if (o.cross_session_cycle_t_max > 0 || o.cross_session_cycle_r_max > 0) {
         for (auto& [sid, pts] : sess_pts) {
           std::vector<double> none2;
@@ -5077,6 +5199,12 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
       voxelDownsample(h0, none, o.submap_voxel);
       none.clear();
       voxelDownsample(h1, none, o.submap_voxel);
+      if (ba_ok) {
+        none.clear();
+        voxelDownsample(h0_ba, none, o.submap_voxel);
+        none.clear();
+        voxelDownsample(h1_ba, none, o.submap_voxel);
+      }
       if (h0.size() > 5000 && h1.size() > 5000) {
         auto c0 = std::make_shared<gtsam_points::PointCloudCPU>();
         auto c1 = std::make_shared<gtsam_points::PointCloudCPU>();
@@ -5113,6 +5241,25 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
           std::snprintf(nm, sizeof(nm), "%s_r%02d_submap_even.pcd", cur.name.c_str(), rid);
           savePts(cdir / nm, h0);
         }
+        // ---- BA 修正后(Pa)的同一个自检, 跟上面原始位姿的版本配对着算 ----
+        // 之前这里"BEFORE/AFTER"两栏传的都是 Identity, 根本没体现 BA 修正——现在真正
+        // 拿 Pa 重新拼一次奇偶两半, 才能回答"局部 BA 到底有没有把这里修好"。
+        double tgt_ghost_ba = -1.0, tgt_ghost_ba_p90 = -1.0;
+        gtsam_points::PointCloudCPU::Ptr c0_ba, c1_ba;
+        if (ba_ok && h0_ba.size() > 5000 && h1_ba.size() > 5000) {
+          c0_ba = std::make_shared<gtsam_points::PointCloudCPU>();
+          c1_ba = std::make_shared<gtsam_points::PointCloudCPU>();
+          c0_ba->add_points(h0_ba);
+          c1_ba->add_points(h1_ba);
+          gtsam_points::KdTree t0_ba(c0_ba->points, c0_ba->size());
+          tgt_ghost_ba = aboveGroundNN(*c0_ba, gm, t0_ba, *c1_ba, Eigen::Isometry3d::Identity(),
+                                       o.z_above, 5000, 3.0, &occ, 2.0, nullptr, nullptr,
+                                       &tgt_ghost_ba_p90);
+          printf("    [区域%02d] target 自身重影 BA前=%.3fm(p90=%.3f) -> BA后=%.3fm(p90=%.3f)"
+                 "  %s\n",
+                 rid, tgt_ghost, tgt_ghost_p90, tgt_ghost_ba, tgt_ghost_ba_p90,
+                 tgt_ghost_ba <= tgt_ghost ? "(BA 有改善)" : "(BA 没改善, 甚至更糊)");
+        }
         // ---- 俯视图: 奇偶两半直接叠在一起看 ----
         // [夜间实测发现] tgt_ghost 的 p90/中位数比值(约 2.5~4 倍)在**已知质量好的**
         // test_grid_data_more 和这份数据上几乎一样, 说明这个比值是 above-ground nn
@@ -5130,17 +5277,35 @@ static CrossCon buildCross(const std::vector<RefFrame>& ref, const ialign::Sessi
                         (ra.size() + 1) / 2);
           std::snprintf(lb, sizeof(lb), "%s ODD HALF (%zu PTS)", cur.name.c_str(), h1.size());
           std::snprintf(lm, sizeof(lm),
-                        "SUBMAP SELF-GHOST CHECK: median nn=%.3fM p90=%.3fM (ratio %.2fx) |"
-                        " NOT A PASS/FAIL GATE, JUDGE BY EYE (SEE BOTTOM ROW)",
+                        "SUBMAP SELF-GHOST CHECK, BEFORE BA: median nn=%.3fM p90=%.3fM"
+                        " (ratio %.2fx) | NOT A PASS/FAIL GATE, JUDGE BY EYE (SEE BOTTOM ROW)",
                         tgt_ghost, tgt_ghost_p90, tgt_ghost > 0 ? tgt_ghost_p90 / tgt_ghost : -1.0);
           if (ghost_res.ok) {
             char nmpng[160];
-            std::snprintf(nmpng, sizeof(nmpng), "%s_r%02d_selfghost.png", cur.name.c_str(), rid);
+            std::snprintf(nmpng, sizeof(nmpng), "%s_r%02d_selfghost_beforeba.png", cur.name.c_str(),
+                          rid);
             // submap_ghost_gate 核实用: 判定为"干净"的**再存一份**到 gdir(跟 cdir 分开),
             // 供人工核实"判定为干净的里面是不是真的混进了有重影的"——见文件头注释。
             ialign::renderTopDownPair(*c0, *c1, Eigen::Isometry3d::Identity(),
                                       Eigen::Isometry3d::Identity(), ip, la, lb, lm,
                                       (gdir / nmpng).string());
+            // 真正的"BA后"版本: 同样的奇偶两半, 换成 Pa 修正后的点重新拼。跟上面那张放
+            // 一起看, 才是名副其实的 before/after 对比(以前这两栏都是 Identity, 没意义)。
+            if (c0_ba && c1_ba) {
+              char la2[128], lm2[192];
+              std::snprintf(la2, sizeof(la2), "R%02d EVEN HALF AFTER BA (%zu PTS)", rid,
+                            h0_ba.size());
+              std::snprintf(lm2, sizeof(lm2),
+                            "SUBMAP SELF-GHOST CHECK, AFTER BA: median nn=%.3fM p90=%.3fM"
+                            " (ratio %.2fx) | COMPARE AGAINST _beforeba.png",
+                            tgt_ghost_ba, tgt_ghost_ba_p90,
+                            tgt_ghost_ba > 0 ? tgt_ghost_ba_p90 / tgt_ghost_ba : -1.0);
+              std::snprintf(nmpng, sizeof(nmpng), "%s_r%02d_selfghost_afterba.png",
+                            cur.name.c_str(), rid);
+              ialign::renderTopDownPair(*c0_ba, *c1_ba, Eigen::Isometry3d::Identity(),
+                                        Eigen::Isometry3d::Identity(), ip, la2, lb, lm2,
+                                        (gdir / nmpng).string());
+            }
           }
         }
       }
@@ -8205,7 +8370,11 @@ int main(int argc, char** argv) {
     // 只把最长的那个挪到最前面, **其余 session 保持原有的相对顺序不变**(sess_order
     // 或目录序里除它以外的先后关系照旧) —— std::rotate(first, mid, mid+1) 恰好做的
     // 就是这件事: 把 [first, mid) 整体后移紧跟在 mid 后面, 不改变彼此的相对顺序。
-    if (S.size() > 1) {
+    if (S.size() > 1 && o.anchor_by_order) {
+      printf("\n  --anchor_by_order 1: 老实用 sess_order 排第一的 %s 当锚点, 不按轨迹长度自动改选\n",
+             S[0].name.c_str());
+    }
+    if (S.size() > 1 && !o.anchor_by_order) {
       const auto trajLen = [](const ialign::SessionData& s) {
         double len = 0;
         for (std::size_t i = 1; i < s.frames.size(); i++)
